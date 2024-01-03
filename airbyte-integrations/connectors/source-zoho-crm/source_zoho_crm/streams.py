@@ -155,22 +155,23 @@ class ZohoStreamFactory:
         def populate_module(module):
             nonlocal thread_count
             thread_count += 1
-            print("total number of threads : ", thread_count)
+            self.logger.debug(f"total number of threads on increment: {thread_count}")
             self._populate_module_meta(module)
             self._populate_fields_meta(module)
             thread_count -= 1
+            self.logger.debug(f"total number of threads on decrement : {thread_count}")
 
         def chunk(max_len, lst):
             for i in range(math.ceil(len(lst) / max_len)):
                 yield lst[i * max_len : (i + 1) * max_len]
 
         max_concurrent_request = self.api.max_concurrent_requests
-
+        self.logger.info(f"max workers used for concurrent requests: {max_concurrent_request}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent_request) as executor:
             for batch in chunk(max_concurrent_request, modules):
                 executor.map(lambda module: populate_module(module), batch)
 
-        print("total number of threads at end : ", thread_count)
+        self.logger.debug("total number of threads at end : ", thread_count)
         bases = (IncrementalZohoCrmStream,)
         for module in modules:
             stream_cls_attrs = {"url_base": self.api.api_url, "module": module}
