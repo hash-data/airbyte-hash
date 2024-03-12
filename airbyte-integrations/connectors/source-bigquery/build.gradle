@@ -4,7 +4,12 @@ plugins {
     id 'airbyte-integration-test-java'
     id 'airbyte-connector-acceptance-test'
 }
+task wrapper(type: Wrapper){
+    gradleVersion = '7.2'
+}
+task prepareKotlinBuildScriptModel {
 
+}
 application {
     mainClass = 'io.airbyte.integrations.source.bigquery.BigQuerySource'
     applicationDefaultJvmArgs = ['-XX:+ExitOnOutOfMemoryError', '-XX:MaxRAMPercentage=75.0']
@@ -29,4 +34,3 @@ dependencies {
     implementation files(project(':airbyte-integrations:bases:base-java').airbyteDocker.outputs)
     integrationTestJavaImplementation files(project(':airbyte-integrations:bases:base-java').airbyteDocker.outputs)
 }
-
