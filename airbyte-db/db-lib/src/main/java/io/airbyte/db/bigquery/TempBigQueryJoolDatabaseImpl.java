@@ -63,7 +63,7 @@ public class TempBigQueryJoolDatabaseImpl extends Database {
   }
 
   public static BigQueryDatabase createBigQueryDatabase(final String projectId, final String jsonCreds) {
-    return new BigQueryDatabase(projectId, jsonCreds);
+    return new BigQueryDatabase(projectId, jsonCreds, 1);
   }
 
 }

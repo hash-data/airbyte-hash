@@ -53,7 +53,7 @@ abstract class AbstractBigQuerySourceTest {
         .put(CONFIG_DATASET_ID, datasetId)
         .build());
 
-    database = new BigQueryDatabase(config.get(CONFIG_PROJECT_ID).asText(), credentialsJsonString);
+    database = new BigQueryDatabase(config.get(CONFIG_PROJECT_ID).asText(), credentialsJsonString,1);
 
     final DatasetInfo datasetInfo =
         DatasetInfo.newBuilder(config.get(CONFIG_DATASET_ID).asText()).setLocation(datasetLocation).build();

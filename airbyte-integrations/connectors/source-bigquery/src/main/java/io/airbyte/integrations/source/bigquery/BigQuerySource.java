@@ -3,6 +3,7 @@
  */
 
 package io.airbyte.integrations.source.bigquery;
+
 import static io.airbyte.integrations.source.relationaldb.RelationalDbQueryUtils.enquoteIdentifier;
 import static io.airbyte.integrations.source.relationaldb.RelationalDbQueryUtils.enquoteIdentifierList;
 import static io.airbyte.integrations.source.relationaldb.RelationalDbQueryUtils.getFullyQualifiedTableNameWithQuoting;
@@ -31,13 +32,8 @@ import io.airbyte.protocol.models.AirbyteStreamNameNamespacePair;
 import io.airbyte.protocol.models.CommonField;
 import io.airbyte.protocol.models.JsonSchemaType;
 import io.airbyte.protocol.models.v0.SyncMode;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
+
+import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -51,6 +47,7 @@ public class BigQuerySource extends AbstractDbSource<StandardSQLTypeName, BigQue
   public static final String CONFIG_DATASET_ID = "dataset_id";
   public static final String CONFIG_PROJECT_ID = "project_id";
   public static final String CONFIG_CREDS = "credentials_json";
+  public static final String CONFIG_THREADS = "threads";
 
   private JsonNode dbConfig;
   private final BigQuerySourceOperations sourceOperations = new BigQuerySourceOperations();
@@ -63,13 +60,19 @@ public class BigQuerySource extends AbstractDbSource<StandardSQLTypeName, BigQue
     if (config.hasNonNull(CONFIG_DATASET_ID)) {
       conf.put(CONFIG_DATASET_ID, config.get(CONFIG_DATASET_ID).asText());
     }
+    if (config.hasNonNull(CONFIG_THREADS)) {
+      conf.put(CONFIG_THREADS, config.get(CONFIG_THREADS).asInt());
+    }else {
+    // set default threads to 4
+     conf.put(CONFIG_THREADS, 4);
+    }
     return Jsons.jsonNode(conf.build());
   }
 
   @Override
   protected BigQueryDatabase createDatabase(final JsonNode sourceConfig) {
     dbConfig = Jsons.clone(sourceConfig);
-    final BigQueryDatabase database = new BigQueryDatabase(sourceConfig.get(CONFIG_PROJECT_ID).asText(), sourceConfig.get(CONFIG_CREDS).asText());
+    final BigQueryDatabase database = new BigQueryDatabase(sourceConfig.get(CONFIG_PROJECT_ID).asText(), sourceConfig.get(CONFIG_CREDS).asText(),300);
     database.setSourceConfig(sourceConfig);
     database.setDatabaseConfig(toDatabaseConfig(sourceConfig));
     return database;
@@ -173,7 +176,8 @@ public class BigQuerySource extends AbstractDbSource<StandardSQLTypeName, BigQue
                                                                   final SyncMode syncMode,
                                                                   final Optional<String> cursorField) {
     LOGGER.info("Queueing query for table: {}", tableName);
-     // This corresponds to the initial sync for in INCREMENTAL_MODE, where the ordering of the records matters
+    // This corresponds to the initial sync for in INCREMENTAL_MODE, where the ordering of the records
+    // matters
     // as intermediate state messages are emitted (if the connector emits intermediate state).
     if (syncMode.equals(SyncMode.INCREMENTAL)) {
       final String quotedCursorField = enquoteIdentifier(cursorField.get(), getQuoteString());
@@ -221,6 +225,7 @@ public class BigQuerySource extends AbstractDbSource<StandardSQLTypeName, BigQue
   }
 
   public static void main(final String[] args) throws Exception {
+//    String[] args2 ={"--read","--config", "/Users/apple/Desktop/hash_data_airbyte/airbyte-hash/airbyte-integrations/connectors/source-bigquery/secrets/config.json", "--catalog", "/Users/apple/Desktop/hash_data_airbyte/airbyte-hash/airbyte-integrations/connectors/source-bigquery/secrets/catalog.json"};
     final Source source = new BigQuerySource();
     LOGGER.info("starting source: {}", BigQuerySource.class);
     new IntegrationRunner(source).run(args);

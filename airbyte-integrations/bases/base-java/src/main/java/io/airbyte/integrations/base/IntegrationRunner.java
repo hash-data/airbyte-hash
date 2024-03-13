@@ -24,6 +24,7 @@ import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -136,9 +137,11 @@ public class IntegrationRunner {
           validateConfig(integration.spec().getConnectionSpecification(), config, "READ");
           final ConfiguredAirbyteCatalog catalog = parseConfig(parsed.getCatalogPath(), ConfiguredAirbyteCatalog.class);
           final Optional<JsonNode> stateOptional = parsed.getStatePath().map(IntegrationRunner::parseConfig);
+          Instant t1 = Instant.now();
           try (final AutoCloseableIterator<AirbyteMessage> messageIterator = source.read(config, catalog, stateOptional.orElse(null))) {
             produceMessages(messageIterator);
           }
+          System.out.println("time taken in read all records: "+java.time.Duration.between(t1,Instant.now()).toSeconds() );
         }
         // destination only
         case WRITE -> {

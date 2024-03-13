@@ -42,7 +42,9 @@ dependencies {
 
     // Big Query
     implementation('com.google.cloud:google-cloud-bigquery:1.133.1')
-
+    implementation ('com.google.cloud:google-cloud-bigquerystorage:2.44.1')
+    implementation ('com.google.cloud:libraries-bom:20.5.0')
+    implementation ('org.apache.avro:avro:1.9.2')
     // Lombok
     implementation 'org.projectlombok:lombok:1.18.20'
     annotationProcessor('org.projectlombok:lombok:1.18.20')

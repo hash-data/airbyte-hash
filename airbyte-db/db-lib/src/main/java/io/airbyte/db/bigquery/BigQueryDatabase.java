@@ -7,42 +7,48 @@ package io.airbyte.db.bigquery;
 import static java.util.Objects.isNull;
 import static org.apache.commons.lang3.StringUtils.EMPTY;
 
+import com.google.common.collect.Streams;
+import com.google.protobuf.ByteString;
+import com.google.api.gax.core.FixedCredentialsProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.ServerStream;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryOptions;
-import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.QueryParameterValue;
 import com.google.cloud.bigquery.StandardSQLTypeName;
-import com.google.cloud.bigquery.DatasetInfo;
-import com.google.cloud.bigquery.DatasetId;
+import com.google.cloud.bigquery.storage.v1.*;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableId;
 import com.google.common.base.Charsets;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Streams;
 import io.airbyte.db.SqlDatabase;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.threeten.bp.Duration;
-import java.util.concurrent.TimeUnit;
+
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+
 public class BigQueryDatabase extends SqlDatabase {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(BigQueryDatabase.class);
@@ -50,13 +56,17 @@ public class BigQueryDatabase extends SqlDatabase {
   private  String datasetName ="temp";
   private final BigQuery bigQuery;
   private final BigQuerySourceOperations sourceOperations;
+  private int readThreads;
+  private final BaseBigQueryReadClient baseBigQueryReadClient;
 
-  public BigQueryDatabase(final String projectId, final String jsonCreds) {
-    this(projectId, jsonCreds, new BigQuerySourceOperations());
+  public BigQueryDatabase(final String projectId, final String jsonCreds, final Integer threads) {
+    this(projectId, jsonCreds,threads, new BigQuerySourceOperations());
   }
 
-  public BigQueryDatabase(final String projectId, final String jsonCreds, final BigQuerySourceOperations sourceOperations) {
+  public BigQueryDatabase(final String projectId, final String jsonCreds, final Integer threads, final BigQuerySourceOperations sourceOperations) {
     try {
+      System.out.println("threads set to : "+threads);
+      this.readThreads = threads;
       this.sourceOperations = sourceOperations;
       final BigQueryOptions.Builder bigQueryBuilder = BigQueryOptions.newBuilder();
       ServiceAccountCredentials credentials = null;
@@ -76,6 +86,10 @@ public class BigQueryDatabase extends SqlDatabase {
               .build())
           .build()
           .getService();
+      // bigquery storage client
+      BaseBigQueryReadSettings baseBigQueryReadSettings =
+              BaseBigQueryReadSettings.newBuilder().setCredentialsProvider(FixedCredentialsProvider.create(credentials)).build();
+      baseBigQueryReadClient = BaseBigQueryReadClient.create(baseBigQueryReadSettings);
     } catch (final IOException e) {
       throw new RuntimeException(e);
     }
@@ -90,10 +104,6 @@ public class BigQueryDatabase extends SqlDatabase {
         .orElse(EMPTY)
         .replace("airbyte/", EMPTY).replace(":", "/");
   }
-
-  public void setDatasetName(String datasetName) {
-    this.datasetName = datasetName;
-}
   @Override
   public void execute(final String sql) throws SQLException {
     final String jobId = UUID.randomUUID().toString();
@@ -106,7 +116,42 @@ public class BigQueryDatabase extends SqlDatabase {
 
     LOGGER.info("BigQuery successfully finished execution SQL: " + sql);
   }
+  public Stream<JsonNode> processRowsFromStream(ReadStream stream, AvroReader reader) throws IOException {
+    String streamName = stream.getName();
+    ReadRowsRequest readRowsRequest = ReadRowsRequest.newBuilder().setReadStream(streamName).build();
+    ServerStream<ReadRowsResponse> streamResponse = baseBigQueryReadClient.readRowsCallable().call(readRowsRequest);
+    List<ByteString> byteArrayResponse = new ArrayList<>();
+    for (ReadRowsResponse response : streamResponse) {
+      byteArrayResponse.add(response.getAvroRows().getSerializedBinaryRows());
+    }
 
+    List<JsonNode> jsonNodes = new ArrayList<>();
+    for (ByteString byteString : byteArrayResponse) {
+      jsonNodes.addAll(reader.processRows(byteString).toList());
+    }
+    return jsonNodes.stream();
+  }
+  public CustomIterator readDataFromTable(String projectID, String tablePath) throws InterruptedException, ExecutionException {
+    // table path e.g. : "projects/oauth-361809/datasets/testfasterbq/tables/test1"
+    ReadSession readSession = ReadSession.newBuilder()
+            .setTable(tablePath).setDataFormat(DataFormat.AVRO)
+            .build();
+    ProjectName parent = ProjectName.of(projectID);
+    CreateReadSessionRequest.Builder builder = CreateReadSessionRequest.newBuilder().setParent(parent.toString()).setReadSession(readSession);
+    ReadSession session = baseBigQueryReadClient.createReadSession(builder.build());
+    ExecutorService executorService = Executors.newFixedThreadPool(readThreads);
+    AvroReader reader = new AvroReader(session.getAvroSchema());
+    System.out.println("number of streams received here : "+session.getStreamsCount());
+    List<Future<Stream<JsonNode>>> futures = new ArrayList<>();
+    for (ReadStream stream : session.getStreamsList()) {
+      Callable<Stream<JsonNode>> task = () -> processRowsFromStream(stream, reader);
+      Future<Stream<JsonNode>> future = executorService.submit(task);
+      futures.add(future);
+    }
+    CustomIterator iterator = new CustomIterator(futures);
+    executorService.shutdown();
+    return iterator;
+  }
   public Stream<JsonNode> query(final String sql) throws Exception {
     return query(sql, Collections.emptyList());
   }
@@ -129,14 +174,16 @@ public class BigQueryDatabase extends SqlDatabase {
 
   public Stream<JsonNode> query(final String sql, final List<QueryParameterValue> params) throws Exception {
     final String jobId = UUID.randomUUID().toString();
+    Instant t1 = Instant.now();
     final ImmutablePair<Job, String> result = executeQuery(bigQuery,jobId, getQueryConfig(sql,jobId,params));
-
+    System.out.println("time taken to query on Bigquery: "+java.time.Duration.between(t1,Instant.now()).toSeconds());
     if (result.getLeft() != null) {
-      final FieldList fieldList = result.getLeft().getQueryResults().getSchema().getFields();
+      Table table = bigQuery.getTable(datasetName, jobId);
       // add expiration time of one week to the table created for query results
-      bigQuery.update(bigQuery.getTable(datasetName, jobId).toBuilder().setExpirationTime(TimeUnit.MILLISECONDS.convert(7, TimeUnit.DAYS) + System.currentTimeMillis()).build());
-      return Streams.stream(result.getLeft().getQueryResults().iterateAll())
-          .map(fieldValues -> sourceOperations.rowToJson(new BigQueryResultSet(fieldValues, fieldList)));
+      bigQuery.update(table.toBuilder().setExpirationTime(TimeUnit.MILLISECONDS.convert(7, TimeUnit.DAYS) + System.currentTimeMillis()).build());
+      String projectName = table.getTableId().getProject();
+      String tableName = table.getTableId().getTable();
+     return Streams.stream(readDataFromTable(projectName,"projects/"+ projectName+ "/datasets/"+ datasetName+"/tables/"+tableName));
     } else
       throw new Exception(
           "Failed to execute query " + sql + (params != null && !params.isEmpty() ? " with params " + params : "") + ". Error: " + result.getRight());
